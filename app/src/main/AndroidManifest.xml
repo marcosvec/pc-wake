@@ -28,7 +28,7 @@
             </intent-filter>
         </activity>
 
-        <!-- Always-on relay. v0.2: heartbeat only (survival test). -->
+        <!-- Always-on relay: gist polling, signed wake commands, heartbeat. -->
         <service
             android:name=".RelayService"
             android:exported="false" />
@@ -38,8 +38,13 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
-                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+
+        <!-- Restarts the relay if Fire OS kills it. -->
+        <receiver
+            android:name=".WatchdogReceiver"
+            android:exported="false" />
     </application>
 </manifest>

@@ -22,6 +22,8 @@ async function api(method, body) {
   const r = await fetch(`https://api.github.com/gists/${c.gist_id}`, {
     method, cache: 'no-store', body: body ? JSON.stringify(body) : undefined,
     headers: { Authorization: `Bearer ${c.token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' } });
+  if (r.status === 401) throw new Error('Token expired or revoked. Make a new one, then redo setup.');
+  if (r.status === 404) throw new Error('Gist not found, or the token lost gist access.');
   if (!r.ok) throw new Error(`GitHub ${r.status}`);
   return r.json();
 }
@@ -37,7 +39,7 @@ function setPill(id, cls, text) { $(id).className = cls; $(id).innerHTML = `<i c
 function render(s) {
   if (!s || !s.relay_seen) { setPill('relay', 'bad', 'never seen'); setPill('pc', '', 'unknown'); return; }
   const age = Date.now() - s.relay_seen;
-  setPill('relay', age < 7 * 60e3 ? 'ok' : 'bad', `seen ${ago(s.relay_seen)}`);
+  setPill('relay', age < 20 * 60e3 ? 'ok' : 'bad', `seen ${ago(s.relay_seen)}`);
   setPill('pc', s.pc === 'awake' ? 'ok' : 'warn', s.pc);
 }
 

@@ -1,78 +1,54 @@
 # pc-wake
 
-Wake a sleeping desktop from anywhere, over Wi-Fi, using a Fire TV Stick as the always-on relay.
-
-No port forwarding, no VPN, no always-on PC, no Ethernet. A phone sends a signed command through a GitHub Gist, a small Android TV app on the Fire Stick picks it up and fires a Wake-on-LAN magic packet on the home network, and the PC wakes in a few seconds. From there, connect with whatever remote desktop client you use.
-
-## How it works
+Wake my desktop from anywhere, over Wi-Fi, with a Fire TV Stick as the always-on relay. The PC sleeps instead of idling 24/7, and one tap on my phone brings it back.
 
 ```mermaid
 flowchart LR
-    A[Phone or laptop<br/>control page] -->|signed command| B[(Secret Gist<br/>mailbox)]
-    B -->|polled every 5 s| C[Fire TV relay app]
-    C -->|magic packet burst| D[PC asleep in S3<br/>Wi-Fi card listening]
-    C -->|confirms PC answers| B
-    B -->|status| A
+    phone["Phone / laptop<br/>control page"] -- "HMAC-signed command" --> gist[("Secret gist<br/>mailbox")]
+    gist -- "polled every 5 s" --> relay["Fire TV Stick<br/>relay app"]
+    relay -- "magic packet burst<br/>(Wi-Fi LAN)" --> pc["Desktop<br/>asleep in S3"]
+    relay -- "status: awake / asleep" --> gist
+    gist -- "status" --> phone
 ```
 
-1. **Control page** (`docs/`, GitHub Pages): one Wake button. It signs a command and writes it to `command.json` in a secret gist.
-2. **Relay** (`app/`, Kotlin, Fire OS 8 / Android 11): a foreground service on the Fire TV Stick checks the gist every 5 seconds using ETags, so idle polling does not count against the GitHub rate limit.
-3. **Wake**: on a valid command the relay sends a burst of magic packets (subnet broadcast, global broadcast and direct to the PC), then pings until the PC answers.
-4. **Report**: the relay writes the result to `status.json`; the page shows it, along with when the relay was last seen and whether the PC is awake.
+No port forwarding, no VPN, no server. Both ends only make outgoing HTTPS calls to the GitHub API, and the gist is the mailbox between them.
 
-Round trip from button press to "awake" is a few seconds plus the PC's own resume time.
+## Pieces
+
+**`app/`: Fire TV relay** (Kotlin, no frameworks beyond OkHttp)
+- Foreground service that polls the gist every 5 s with ETags, so "nothing changed" replies don't count against the rate limit.
+- Verifies each command, fires a Wake-on-LAN burst, and confirms the PC woke by ping or SMB, then writes the result back.
+- Stays alive on Fire OS: wake and Wi-Fi locks, auto-restart on boot and after updates, a 15 min watchdog alarm, Doze-exempt.
+- Writes status only when something changes, plus a 15 min keepalive.
+
+**`docs/`: control page** (static, GitHub Pages)
+- Signs commands in the browser with WebCrypto and polls for the relay's answer.
+- Config lives only in that browser's storage. Phone setup is a one-time QR link: the config rides in the URL fragment, which never reaches a server and is wiped from the address bar on load.
+- No third-party scripts at runtime. The QR library is bundled and was checked against its npm integrity hash.
 
 ## Security model
 
-The repo and the page are public. Nothing in them is secret.
+- Treat the gist as public. GitHub "secret" gists are unlisted, not private.
+- Every command is `HMAC-SHA256(secret, action|timestamp|nonce)`. The relay rejects bad signatures, anything older than 2 min, replayed nonces, and every action except `wake`.
+- Worst case if everything leaks: someone wakes my PC. It still sits at a password-protected lock screen.
+- Nothing personal is in this repo. The token, signing secret, gist ID, MAC and IP live in `files/config.json` on the Stick (pushed over ADB) and in the phone's browser.
 
-- **Signed commands.** Every command is HMAC-SHA256 signed over `action|timestamp|nonce` with a passphrase only the relay and your devices know.
-- **No replays.** The relay rejects bad signatures, commands older than 2 minutes, and any nonce it has already seen.
-- **Wake only.** The only action is waking the PC. Nothing here can unlock, control or shut it down; the OS login stays in place.
-- **Least privilege.** The GitHub token is fine-grained with Gists read/write only.
-- **Secrets stay on devices.** Token, passphrase, gist id and the PC's MAC/IP live in `files/config.json` on the Stick (pushed over ADB) and in the browser's local storage on your phone. A one-time setup link (QR code) moves them to a phone without typing; the secrets ride in the URL fragment, which is never sent to a server and is wiped from the address bar on load.
+## The hard part: Wake-on-LAN over Wi-Fi
 
-## Hardware notes
+Wired WoL is routine. Wi-Fi WoL (WoWLAN) depends on the card, the driver, the router and the BIOS all cooperating, and most guides say don't bother. Setup here: MSI PRO B660M-A, Intel AX201 (CNVi), Google Nest Wifi.
 
-Tested on an MSI PRO B660M-A WIFI (Intel AX201 Wi-Fi) and a Fire TV Stick 4K (2nd gen, Fire OS 8.1).
+What it took:
+- **The BIOS gate nobody mentions.** Windows was fully configured, every device reported it could wake from S3, and a UDP listener proved the phone's packets were arriving. Still nothing. The AX201 is a CNVi card on the chipset bus, not a PCIe slot, so the switch that matters is *Resume By Intel Onboard LAN*, not the PCIe wake option.
+- **Random hardware addresses off.** A sleeping card only answers packets for the MAC it was using, and with randomization on, that isn't the real one.
+- **ErP off, S3 sleep only.** Hibernate and shutdown power the radio down.
+- **Two timing quirks, handled in code.** The card ignores packets for ~20-30 s after the PC goes to sleep, and single packets get dropped. The relay re-bursts every ~10 s for up to 60 s and stops as soon as the PC answers.
 
-Wake-on-Wireless-LAN only works from **sleep (S3)**. In hibernate or shutdown the Wi-Fi card is fully off.
+## Setup notes
 
-The finding that cost the most time: on this board the built-in Intel Wi-Fi is part of the chipset (CNVi), not a PCIe card. So the BIOS option that gates its wake signal is **Resume By Intel Onboard LAN**, not *Resume By PCI-E Device*. Windows reported every device as able to wake from S3 and every setting was correct; the BIOS was silently blocking the signal.
+1. Fire TV: developer options on, ADB debugging on.
+2. Build and install: `gradlew assembleDebug`, then `adb install -r app/build/outputs/apk/debug/app-debug.apk`.
+3. Push config: `adb shell "run-as com.marcosvec.pcwake sh -c 'cat > files/config.json'" < config.json`, with keys `token`, `secret`, `gist_id`, `pc_mac`, `pc_ip`, `broadcast`.
+4. Keep the Stick awake: max out `secure sleep_timeout` and `system screen_off_timeout`, add the package to the Doze whitelist, set its standby bucket to `active`.
+5. Open the app once. From then on it restarts itself.
 
-Checklist that made it work:
-
-| Layer | Setting |
-| --- | --- |
-| BIOS | Resume By Intel Onboard LAN: Enabled; Resume By PCI-E/Networking Device: Enabled; ErP Ready: Disabled |
-| Windows, Device Manager | Wi-Fi adapter: Allow this device to wake the computer + Only allow a magic packet |
-| Windows, adapter Advanced | Wake on Magic Packet: Enabled; ARP / NS / GTK rekey offload for WoWLAN: Enabled |
-| Windows, Wi-Fi network | Random hardware addresses: Off (the magic packet targets the real MAC) |
-| Windows Firewall | Allow inbound ICMPv4 echo from the local subnet, so the relay can confirm the PC is up |
-
-Known quirks: packets sent in the first 20 to 30 seconds after the PC goes to sleep do nothing (the card is still switching modes), and single packets sometimes get dropped on Wi-Fi. The relay handles both with a burst and a confirm-and-retry loop.
-
-## Setup
-
-Requirements: JDK 17, Android SDK (platform 34, build-tools 34), ADB debugging enabled on the Fire TV.
-
-```
-adb connect <fire-tv-ip>:5555
-gradlew assembleDebug
-adb install -r app/build/outputs/apk/debug/app-debug.apk
-```
-
-Create a secret gist with two files, `command.json` (`{"cmd":null}`) and `status.json` (`{}`), then push the relay config:
-
-```
-adb shell "run-as com.marcosvec.pcwake sh -c 'cat > files/config.json'" < config.json
-```
-
-`config.json` keys: `token`, `secret`, `gist_id`, `pc_mac`, `pc_ip`, `broadcast`. Open the app once on the TV; the relay service starts and restarts itself on boot.
-
-On the control page, open **Setup on this device**, enter the token, passphrase and gist id, then use **Phone setup QR** to move them to your phone.
-
-## Status
-
-- Working: wake from the phone on any network, signed commands, status reporting, start on boot.
-- In progress: multi-day survival test of the relay on Fire OS (which is aggressive about killing background apps).
+The token is a fine-grained GitHub token with only gist read/write.

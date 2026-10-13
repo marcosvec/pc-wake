@@ -7,6 +7,8 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
+class GistHttpException(val code: Int, op: String) : RuntimeException("gist $op $code")
+
 /**
  * The secret gist is the mailbox:
  *   command.json  written by the control page  {"cmd": {action, ts, nonce, sig}}
@@ -32,7 +34,7 @@ class Gist(private val cfg: Config) {
         etag?.let { b.header("If-None-Match", it) }
         http.newCall(b.get().build()).execute().use { r ->
             if (r.code == 304) return lastCommand
-            if (!r.isSuccessful) throw RuntimeException("gist GET ${r.code}")
+            if (!r.isSuccessful) throw GistHttpException(r.code, "GET")
             etag = r.header("ETag")
             val files = JSONObject(r.body!!.string()).getJSONObject("files")
             lastCommand = files.optJSONObject("command.json")?.optString("content")
@@ -44,6 +46,6 @@ class Gist(private val cfg: Config) {
         val body = JSONObject().put("files", JSONObject().put("status.json",
             JSONObject().put("content", status.toString(2)))).toString()
         val req = base().patch(body.toRequestBody("application/json".toMediaType())).build()
-        http.newCall(req).execute().use { r -> if (!r.isSuccessful) throw RuntimeException("gist PATCH ${r.code}") }
+        http.newCall(req).execute().use { r -> if (!r.isSuccessful) throw GistHttpException(r.code, "PATCH") }
     }
 }
