@@ -38,7 +38,7 @@ class RelayService : Service() {
 
     companion object {
         const val TAG = "PCWake"
-        const val VERSION = "0.4"
+        const val VERSION = "0.4.1"
         const val CHANNEL = "relay"
         const val NOTIF_ID = 1
         const val POLL_MS = 5_000L
@@ -79,6 +79,7 @@ class RelayService : Service() {
     override fun onCreate() {
         super.onCreate()
         running = true
+        RelayState.startedAt = started
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(CHANNEL, "PC Wake relay", NotificationManager.IMPORTANCE_LOW))
         startForeground(NOTIF_ID, notification("PC Wake relay running"))
@@ -113,6 +114,8 @@ class RelayService : Service() {
     private fun heartbeat() {
         beats++
         pcAwake = cfg?.let { Net.isAwake(it.pcIp) } ?: false
+        RelayState.pcAwake = pcAwake
+        RelayState.pcCheckedAt = System.currentTimeMillis()
         val upMin = (System.currentTimeMillis() - started) / 60_000
         log("HB #$beats up=${upMin}m pc=${if (pcAwake) "awake" else "asleep"} pollErrors=$pollErrors" +
             (authProblem?.let { " AUTH=$it" } ?: ""))
@@ -124,11 +127,13 @@ class RelayService : Service() {
         var next = POLL_MS
         try {
             gist?.fetchCommand()?.let { handle(it) }
+            if (gist != null) { RelayState.lastPollAt = System.currentTimeMillis(); RelayState.pollError = null }
             if (pollErrors > 0) log("POLL OK again after $pollErrors errors")
             pollErrors = 0
             if (authProblem != null) {
                 log("AUTH OK again")
                 authProblem = null
+                RelayState.authProblem = null
                 setNotification("PC Wake relay running")
                 reportStatus(force = true)
             }
@@ -142,6 +147,7 @@ class RelayService : Service() {
             if (problem != null) {
                 if (authProblem != problem) {
                     authProblem = problem
+                    RelayState.authProblem = problem
                     log("AUTH PROBLEM: $problem")
                     setNotification("PC Wake: $problem")
                 }
@@ -159,6 +165,7 @@ class RelayService : Service() {
     }
 
     private fun logPollError(e: Exception) {
+        RelayState.pollError = "${e.javaClass.simpleName}: ${e.message}"
         if (pollErrors == 1 || pollErrors % 12 == 0) log("POLL ERROR #$pollErrors ${e.javaClass.simpleName}: ${e.message}")
     }
 
@@ -185,6 +192,7 @@ class RelayService : Service() {
         }
         if (reject != null) { finish(nonce, reject, null); return }
         if (!waking.compareAndSet(false, true)) { finish(nonce, "wake already in progress", null); return }
+        RelayState.waking = true
 
         wakeExec.execute {
             try {
@@ -200,12 +208,15 @@ class RelayService : Service() {
                 finish(nonce, "error: ${e.javaClass.simpleName}", null)
             } finally {
                 waking.set(false)
+                RelayState.waking = false
             }
         }
     }
 
     private fun finish(nonce: String, result: String, secs: Long?) {
         log("RESULT nonce=$nonce $result" + (if (secs != null) " (${secs}s)" else ""))
+        RelayState.lastResult = result + (if (secs != null && secs > 0) " in ${secs}s" else "")
+        RelayState.lastResultAt = System.currentTimeMillis()
         if (result == "awake" || result == "already awake") pcAwake = true
         lastResult = JSONObject().put("nonce", nonce).put("result", result)
             .put("secs", secs ?: JSONObject.NULL).put("at", System.currentTimeMillis())
@@ -231,6 +242,7 @@ class RelayService : Service() {
             g.writeStatus(s)
             lastWrittenKey = key
             lastWriteAt = now
+            RelayState.lastStatusWriteAt = now
         } catch (e: Exception) { log("STATUS WRITE ERROR ${e.message}") }
     }
 

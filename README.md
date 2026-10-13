@@ -20,6 +20,7 @@ No port forwarding, no VPN, no server. Both ends only make outgoing HTTPS calls 
 - Verifies each command, fires a Wake-on-LAN burst, and confirms the PC woke by ping or SMB, then writes the result back.
 - Stays alive on Fire OS: wake and Wi-Fi locks, auto-restart on boot and after updates, a 15 min watchdog alarm, Doze-exempt.
 - Writes status only when something changes, plus a 15 min keepalive.
+- The TV screen shows live status and recent activity. **Test relay** checks every link (config, service, network, mailbox and token, power saving, the phone page) without waking the PC.
 
 **`docs/`: control page** (static, GitHub Pages)
 - Signs commands in the browser with WebCrypto and polls for the relay's answer.
@@ -43,12 +44,6 @@ What it took:
 - **ErP off, S3 sleep only.** Hibernate and shutdown power the radio down.
 - **Two timing quirks, handled in code.** The card ignores packets for ~20-30 s after the PC goes to sleep, and single packets get dropped. The relay re-bursts every ~10 s for up to 60 s and stops as soon as the PC answers.
 
-## Setup notes
+## Run your own
 
-1. Fire TV: developer options on, ADB debugging on.
-2. Build and install: `gradlew assembleDebug`, then `adb install -r app/build/outputs/apk/debug/app-debug.apk`.
-3. Push config: `adb shell "run-as com.marcosvec.pcwake sh -c 'cat > files/config.json'" < config.json`, with keys `token`, `secret`, `gist_id`, `pc_mac`, `pc_ip`, `broadcast`.
-4. Keep the Stick awake: max out `secure sleep_timeout` and `system screen_off_timeout`, add the package to the Doze whitelist, set its standby bucket to `active`.
-5. Open the app once. From then on it restarts itself.
-
-The token is a fine-grained GitHub token with only gist read/write.
+Everything you need is in [SETUP.md](SETUP.md): about 30-45 minutes. The only step that can truly fail is the first one, checking your PC wakes over Wi-Fi. The rest is copy and paste.

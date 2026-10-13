@@ -11,8 +11,8 @@ android {
         applicationId = "com.marcosvec.pcwake"
         minSdk = 28          // Fire OS 7+
         targetSdk = 30
-        versionCode = 4
-        versionName = "0.4"
+        versionCode = 5
+        versionName = "0.4.1"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
