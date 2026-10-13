@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>PC Wake</title>
+<style>
+  :root { --bg:#111; --card:#1b1b1b; --ink:#f2f2f2; --quiet:#9a9a9a; --line:#2c2c2c; --go:#2f7cf6; --ok:#3fb950; --bad:#f85149; --warn:#d29922; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.4 -apple-system, system-ui, Segoe UI, Roboto, sans-serif; }
+  main { max-width:440px; margin:0 auto; padding:24px 16px 48px; }
+  h1 { font-size:22px; margin:0 0 16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:16px; }
+  .row { display:flex; justify-content:space-between; padding:6px 0; }
+  .row span:first-child { color:var(--quiet); }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; background:var(--quiet); }
+  .ok .dot { background:var(--ok); } .bad .dot { background:var(--bad); } .warn .dot { background:var(--warn); }
+  button { font:inherit; border:0; border-radius:10px; padding:12px 16px; cursor:pointer; }
+  #wake { width:100%; font-size:20px; font-weight:600; padding:18px; background:var(--go); color:#fff; }
+  #wake:disabled { opacity:.5; }
+  #result { margin-top:12px; min-height:22px; text-align:center; color:var(--quiet); }
+  details summary { cursor:pointer; color:var(--quiet); }
+  label { display:block; font-size:13px; color:var(--quiet); margin:12px 0 4px; }
+  input { width:100%; font:inherit; padding:10px; border-radius:8px; border:1px solid var(--line); background:#0d0d0d; color:var(--ink); }
+  .btns { display:flex; gap:8px; margin-top:12px; }
+  .btns button { flex:1; background:#2a2a2a; color:var(--ink); }
+  #qr { margin-top:12px; text-align:center; } #qr img { background:#fff; padding:8px; border-radius:8px; max-width:100%; }
+  .note { font-size:13px; color:var(--quiet); }
+</style>
+</head>
+<body>
+<main>
+  <h1>PC Wake</h1>
+  <div class="card">
+    <div class="row"><span>Relay (Fire TV)</span><b id="relay"><i class="dot"></i>...</b></div>
+    <div class="row"><span>PC</span><b id="pc"><i class="dot"></i>...</b></div>
+  </div>
+  <button id="wake">Wake PC</button>
+  <div id="result"></div>
+
+  <div class="card" style="margin-top:24px">
+    <details id="setup">
+      <summary>Setup on this device</summary>
+      <label for="token">GitHub token (gist read/write)</label><input id="token" type="password" autocomplete="off">
+      <label for="secret">Signing passphrase</label><input id="secret" type="password" autocomplete="off">
+      <label for="gist">Gist ID</label><input id="gist" autocomplete="off">
+      <div class="btns"><button id="save">Save</button><button id="showqr">Phone setup QR</button><button id="forget">Forget</button></div>
+      <div id="qr"></div>
+      <p class="note">Saved only in this browser. The QR contains your token: scan it with your phone, don't screenshot or share it.</p>
+    </details>
+  </div>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
