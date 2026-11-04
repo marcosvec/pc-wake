@@ -17,15 +17,11 @@ import android.os.SystemClock
 import android.util.Log
 import org.json.JSONObject
 import java.io.File
-import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
-import javax.crypto.Mac
-import javax.crypto.spec.SecretKeySpec
-import kotlin.math.abs
 
 /**
  * Always-on relay.
@@ -38,7 +34,7 @@ class RelayService : Service() {
 
     companion object {
         const val TAG = "PCWake"
-        const val VERSION = "0.4.1"
+        const val VERSION = BuildConfig.VERSION_NAME
         const val CHANNEL = "relay"
         const val NOTIF_ID = 1
         const val POLL_MS = 5_000L
@@ -47,7 +43,6 @@ class RelayService : Service() {
         const val HEARTBEAT_MS = 60_000L
         const val KEEPALIVE_MS = 15 * 60_000L
         const val WATCHDOG_MS = 15 * 60_000L
-        const val MAX_SKEW_MS = 120_000L
 
         @Volatile var running = false
 
@@ -68,7 +63,7 @@ class RelayService : Service() {
     private var cfg: Config? = null
     private var beats = 0L
     private var pollErrors = 0
-    private var lastNonce: String? = null
+    private lateinit var nonces: NonceStore
     @Volatile private var lastResult: JSONObject? = null
     @Volatile private var pcAwake = false
     @Volatile private var authProblem: String? = null
@@ -90,8 +85,10 @@ class RelayService : Service() {
         wifiLock = (applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager)
             .createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "pcwake:wifi").apply { acquire() }
 
-        lastNonce = getSharedPreferences("relay", MODE_PRIVATE).getString("lastNonce", null)
-        cfg = Config.load(this)
+        val prefs = getSharedPreferences("relay", MODE_PRIVATE)
+        nonces = NonceStore.from(prefs.getString("seenNonces", null))
+        prefs.getString("lastNonce", null)?.let { nonces.remember(it) }
+        cfg = DeviceConfig.load(this)
         gist = cfg?.let { Gist(it) }
         armWatchdog()
 
@@ -99,7 +96,8 @@ class RelayService : Service() {
         pollLoop = Handler(pollThread.looper)
         hbThread = HandlerThread("heartbeat").apply { start() }
         hbLoop = Handler(hbThread.looper)
-        log("SERVICE CREATED v$VERSION config=${if (cfg != null) "ok" else "MISSING"}")
+        val configState = if (cfg != null) "ok" else (DeviceConfig.problem(this) ?: "MISSING")
+        log("SERVICE CREATED v$VERSION config=$configState")
         hbLoop.post(::heartbeat)
         pollLoop.post(::poll)
     }
@@ -139,9 +137,12 @@ class RelayService : Service() {
             }
         } catch (e: GistHttpException) {
             pollErrors++
-            val problem = when (e.code) {
-                401 -> "token expired or revoked"
-                404 -> "gist not found, or token lost gist access"
+            val rateLimited = e.code == 429 || e.message?.contains("rate limit", ignoreCase = true) == true
+            val problem = when {
+                rateLimited -> null
+                e.code == 401 -> "token expired or revoked"
+                e.code == 403 -> "token cannot read or write this gist"
+                e.code == 404 -> "gist not found, or token lost gist access"
                 else -> null
             }
             if (problem != null) {
@@ -154,7 +155,9 @@ class RelayService : Service() {
                 next = AUTH_BACKOFF_MS
             } else {
                 logPollError(e)
-                next = if (pollErrors > 3) POLL_BACKOFF_MS else POLL_MS
+                next = if (rateLimited || pollErrors > 3) {
+                    if (rateLimited) AUTH_BACKOFF_MS else POLL_BACKOFF_MS
+                } else POLL_MS
             }
         } catch (e: Exception) {
             pollErrors++
@@ -173,42 +176,42 @@ class RelayService : Service() {
 
     /** Runs on the poll thread. Verification is fast; the wake itself goes to the wake thread. */
     private fun handle(content: String) {
-        val cmd = try { JSONObject(content).optJSONObject("cmd") } catch (e: Exception) { null } ?: return
-        val nonce = cmd.optString("nonce")
-        if (nonce.isEmpty() || nonce == lastNonce) return
-        rememberNonce(nonce)
         val c = cfg ?: return
-
-        val action = cmd.optString("action")
-        val ts = cmd.optLong("ts")
-        val sig = cmd.optString("sig").lowercase()
-        val expected = hmacHex(c.secret, "$action|$ts|$nonce")
-
-        val reject = when {
-            !MessageDigest.isEqual(expected.toByteArray(), sig.toByteArray()) -> "rejected: bad signature"
-            abs(System.currentTimeMillis() - ts) > MAX_SKEW_MS -> "rejected: stale command"
-            action != "wake" -> "rejected: unknown action"
-            else -> null
-        }
-        if (reject != null) { finish(nonce, reject, null); return }
-        if (!waking.compareAndSet(false, true)) { finish(nonce, "wake already in progress", null); return }
-        RelayState.waking = true
-
-        wakeExec.execute {
-            try {
-                if (Net.isAwake(c.pcIp)) {
-                    finish(nonce, "already awake", 0)
-                } else {
-                    log("WAKE nonce=$nonce")
-                    val r = Waker.wakeAndConfirm(c) { n -> if (n > 1) log("RE-BURST #$n nonce=$nonce") }
-                    if (r.awake) finish(nonce, "awake", r.secs)
-                    else finish(nonce, "no response after ${r.secs}s (${r.bursts} bursts)", null)
+        when (val d = WakeProtocol.decide(content, c.secret, System.currentTimeMillis(), nonces)) {
+            WakeProtocol.Decision.Ignore -> return
+            is WakeProtocol.Decision.Reject -> {
+                persistNonces()
+                clearCommandQuietly()
+                finish(d.nonce, d.reason, null)
+            }
+            is WakeProtocol.Decision.Accept -> {
+                persistNonces()
+                clearCommandQuietly()
+                if (!waking.compareAndSet(false, true)) {
+                    finish(d.nonce, "wake already in progress", null)
+                    return
                 }
-            } catch (e: Exception) {
-                finish(nonce, "error: ${e.javaClass.simpleName}", null)
-            } finally {
-                waking.set(false)
-                RelayState.waking = false
+                RelayState.waking = true
+                val nonce = d.nonce
+                wakeExec.execute {
+                    try {
+                        if (Net.isAwake(c.pcIp)) {
+                            finish(nonce, "already awake", 0)
+                        } else {
+                            log("WAKE nonce=$nonce")
+                            val r = AndroidNet.wake(this@RelayService, c) { n ->
+                                if (n > 1) log("RE-BURST #$n nonce=$nonce")
+                            }
+                            if (r.awake) finish(nonce, "awake", r.secs)
+                            else finish(nonce, "no response after ${r.secs}s (${r.bursts} bursts)", null)
+                        }
+                    } catch (e: Exception) {
+                        finish(nonce, "error: ${e.javaClass.simpleName}", null)
+                    } finally {
+                        waking.set(false)
+                        RelayState.waking = false
+                    }
+                }
             }
         }
     }
@@ -246,15 +249,19 @@ class RelayService : Service() {
         } catch (e: Exception) { log("STATUS WRITE ERROR ${e.message}") }
     }
 
-    private fun rememberNonce(n: String) {
-        lastNonce = n
-        getSharedPreferences("relay", MODE_PRIVATE).edit().putString("lastNonce", n).apply()
+    private fun persistNonces() {
+        getSharedPreferences("relay", MODE_PRIVATE).edit()
+            .putString("seenNonces", nonces.serialize())
+            .remove("lastNonce")
+            .apply()
     }
 
-    private fun hmacHex(secret: String, msg: String): String {
-        val mac = Mac.getInstance("HmacSHA256")
-        mac.init(SecretKeySpec(secret.toByteArray(Charsets.UTF_8), "HmacSHA256"))
-        return mac.doFinal(msg.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+    private fun clearCommandQuietly() {
+        try {
+            gist?.clearCommand()
+        } catch (e: Exception) {
+            log("CLEAR COMMAND ${e.message}")
+        }
     }
 
     // ---- misc ----------------------------------------------------------------
@@ -293,6 +300,7 @@ class RelayService : Service() {
         pollThread.quitSafely()
         hbThread.quitSafely()
         wakeExec.shutdownNow()
+        gist?.close()
         wakeLock?.let { if (it.isHeld) it.release() }
         wifiLock?.let { if (it.isHeld) it.release() }
         super.onDestroy()

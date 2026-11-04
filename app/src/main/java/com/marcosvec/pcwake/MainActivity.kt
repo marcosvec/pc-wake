@@ -36,7 +36,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        cfg = Config.load(this)
+        cfg = DeviceConfig.load(this)
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -45,8 +45,9 @@ class MainActivity : Activity() {
             setPadding(64, 40, 64, 40)
         }
         root.addView(text("PC Wake", 34f, Color.WHITE, center = true))
-        root.addView(text(cfg?.let { "Relay v${RelayService.VERSION}   target ${it.pcIp}" }
-            ?: "Not configured: push files/config.json over ADB", 16f, Color.rgb(170, 170, 170), center = true)
+        val configLine = cfg?.let { "Relay v${RelayService.VERSION}   target ${it.pcIp}" }
+            ?: "Not configured: ${DeviceConfig.problem(this) ?: "push files/config.json over ADB"}"
+        root.addView(text(configLine, 16f, Color.rgb(170, 170, 170), center = true)
             .apply { setPadding(0, 8, 0, 24) })
 
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
@@ -111,7 +112,9 @@ class MainActivity : Activity() {
         status.text = "Sending wake burst..."
         Thread {
             try {
-                val r = Waker.wakeAndConfirm(c) { n -> if (n > 1) post { status.text = "No answer yet, burst $n..." } }
+                val r = AndroidNet.wake(this@MainActivity, c) { n ->
+                    if (n > 1) post { status.text = "No answer yet, burst $n..." }
+                }
                 post { status.text = if (r.awake) "PC is awake (${r.secs}s)" else "No answer after ${r.secs}s" }
             } catch (e: Exception) {
                 post { status.text = "Error: ${e.javaClass.simpleName}: ${e.message}" }
@@ -135,8 +138,9 @@ class MainActivity : Activity() {
                 out += "${if (ok) "OK  " else "FAIL"}  ${name.padEnd(13)} $detail"
             }
             try {
-                val c = cfg
-                check("Config", c != null, if (c != null) "loaded" else "missing, push files/config.json over ADB")
+                val problem = DeviceConfig.problem(this@MainActivity)
+                val c = if (problem == null) DeviceConfig.load(this@MainActivity) else null
+                check("Config", c != null, problem ?: "loaded")
 
                 val wasRunning = RelayService.running
                 if (!wasRunning) RelayService.start(this@MainActivity, "test-button")
@@ -152,26 +156,40 @@ class MainActivity : Activity() {
                 }
                 check("Network", net != null, net ?: "no network")
 
+                var mailboxOk = false
                 if (c != null) {
                     val t0 = System.currentTimeMillis()
+                    val g = Gist(c)
                     try {
-                        Gist(c).fetchCommand()
+                        g.fetchCommand()
                         check("Mailbox", true, "reachable, token OK (${System.currentTimeMillis() - t0} ms)")
+                        mailboxOk = true
                     } catch (e: GistHttpException) {
                         check("Mailbox", false, when (e.code) {
                             401 -> "token expired or revoked"
+                            403 -> "token cannot read or write this gist"
                             404 -> "gist not found, or token lost gist access"
+                            429 -> "GitHub rate limit, try again in a few minutes"
                             else -> "GitHub error ${e.code}"
                         })
                     } catch (e: Exception) {
                         check("Mailbox", false, "can't reach GitHub (${e.javaClass.simpleName})")
+                    } finally {
+                        g.close()
                     }
                 }
 
                 val exempt = getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
                 check("Power saving", exempt, if (exempt) "exempt" else "not exempt, run the deviceidle whitelist command")
 
-                val w = RelayState.lastStatusWriteAt
+                var w = RelayState.lastStatusWriteAt
+                if (w == 0L && mailboxOk && RelayState.authProblem == null) {
+                    val deadline = System.currentTimeMillis() + 10_000
+                    while (w == 0L && System.currentTimeMillis() < deadline && RelayState.authProblem == null) {
+                        Thread.sleep(200)
+                        w = RelayState.lastStatusWriteAt
+                    }
+                }
                 val fresh = w > 0 && System.currentTimeMillis() - w < 20 * 60_000L
                 check("Phone page", fresh, if (w > 0) "updated ${ago(System.currentTimeMillis() - w)}" else "not updated yet")
 

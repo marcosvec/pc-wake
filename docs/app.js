@@ -2,64 +2,134 @@
 // live only in this browser's localStorage (set via the form or a #setup= link).
 const LS = 'pcwake.cfg';
 const $ = (id) => document.getElementById(id);
+let statusEtag = null;
+let statusCache = null;
 
 function load() { try { return JSON.parse(localStorage.getItem(LS)); } catch { return null; } }
 function store(c) { try { localStorage.setItem(LS, JSON.stringify(c)); } catch {} }
-const b64u = { enc: (s) => btoa(unescape(encodeURIComponent(s))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''),
-               dec: (s) => decodeURIComponent(escape(atob(s.replace(/-/g,'+').replace(/_/g,'/')))) };
+
+function readForm() {
+  const c = { token: $('token').value.trim(), secret: $('secret').value.trim(), gist_id: $('gist').value.trim() };
+  if (!c.token || !c.secret || !c.gist_id) return null;
+  return c;
+}
 
 // One-time setup link: #setup=<base64url json>. Saved, then wiped from the URL.
 if (location.hash.startsWith('#setup=')) {
-  try { const c = JSON.parse(b64u.dec(location.hash.slice(7))); if (c.token && c.secret && c.gist_id) { store(c); } }
-  catch (e) { alert('Setup link invalid'); }
-  history.replaceState(null, '', location.pathname);
+  try {
+    const c = JSON.parse(b64urlDecode(location.hash.slice(7)));
+    if (c.token && c.secret && c.gist_id) store(c);
+    else alert('Setup link invalid');
+  } catch (e) { alert('Setup link invalid'); }
+  history.replaceState(null, '', location.pathname + location.search);
 }
 
-function fillForm() { const c = load() || {}; $('token').value = c.token || ''; $('secret').value = c.secret || ''; $('gist').value = c.gist_id || ''; $('setup').open = !(c.token && c.secret && c.gist_id); }
+function fillForm() {
+  const c = load() || {};
+  $('token').value = c.token || '';
+  $('secret').value = c.secret || '';
+  $('gist').value = c.gist_id || '';
+  $('setup').open = !(c.token && c.secret && c.gist_id);
+}
+
+function authHeaders(c) {
+  return {
+    Authorization: `Bearer ${c.token}`,
+    Accept: 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+  };
+}
+
+function githubError(status) {
+  if (status === 401) return 'Token expired or revoked. Make a new one, then redo setup.';
+  if (status === 403) return 'Token cannot read or write this gist.';
+  if (status === 404) return 'Gist not found, or the token lost gist access.';
+  if (status === 429) return 'GitHub rate limit. Wait a few minutes.';
+  return `GitHub ${status}`;
+}
 
 async function api(method, body) {
   const c = load();
-  const r = await fetch(`https://api.github.com/gists/${c.gist_id}`, {
-    method, cache: 'no-store', body: body ? JSON.stringify(body) : undefined,
-    headers: { Authorization: `Bearer ${c.token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' } });
-  if (r.status === 401) throw new Error('Token expired or revoked. Make a new one, then redo setup.');
-  if (r.status === 404) throw new Error('Gist not found, or the token lost gist access.');
-  if (!r.ok) throw new Error(`GitHub ${r.status}`);
+  if (!c) throw new Error('Not set up on this device');
+  const headers = authHeaders(c);
+  if (body) headers['Content-Type'] = 'application/json';
+  const r = await fetch(`https://api.github.com/gists/${encodeURIComponent(c.gist_id)}`, {
+    method, cache: 'no-store', headers, body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!r.ok) throw new Error(githubError(r.status));
   return r.json();
 }
 
 async function readStatus() {
-  const g = await api('GET');
-  return JSON.parse(g.files['status.json'].content);
+  const c = load();
+  if (!c) throw new Error('Not set up on this device');
+  const headers = authHeaders(c);
+  if (statusEtag) headers['If-None-Match'] = statusEtag;
+  const r = await fetch(`https://api.github.com/gists/${encodeURIComponent(c.gist_id)}`, {
+    method: 'GET', cache: 'no-store', headers,
+  });
+  if (r.status === 304 && statusCache) return statusCache;
+  if (!r.ok) throw new Error(githubError(r.status));
+  const etag = r.headers.get('ETag');
+  if (etag) statusEtag = etag;
+  const g = await r.json();
+  const file = g.files && g.files['status.json'];
+  if (!file || typeof file.content !== 'string' || !file.content.trim()) {
+    throw new Error('status.json is missing from the gist');
+  }
+  statusCache = JSON.parse(file.content);
+  return statusCache;
 }
 
 function ago(ms) { const s = Math.round((Date.now() - ms) / 1000); if (s < 60) return `${s}s ago`; const m = Math.round(s / 60); return m < 120 ? `${m} min ago` : `${Math.round(m / 60)} h ago`; }
-function setPill(id, cls, text) { $(id).className = cls; $(id).innerHTML = `<i class="dot"></i>${text}`; }
+
+function setPill(id, cls, text) {
+  const el = $(id);
+  el.className = cls;
+  el.replaceChildren();
+  const dot = document.createElement('i');
+  dot.className = 'dot';
+  el.appendChild(dot);
+  el.appendChild(document.createTextNode(text));
+}
+
+function renderUnset() { setPill('relay', 'warn', 'not set up'); setPill('pc', '', 'unknown'); }
 
 function render(s) {
   if (!s || !s.relay_seen) { setPill('relay', 'bad', 'never seen'); setPill('pc', '', 'unknown'); return; }
   const age = Date.now() - s.relay_seen;
   setPill('relay', age < 20 * 60e3 ? 'ok' : 'bad', `seen ${ago(s.relay_seen)}`);
-  setPill('pc', s.pc === 'awake' ? 'ok' : 'warn', s.pc);
+  setPill('pc', s.pc === 'awake' ? 'ok' : 'warn', s.pc || 'unknown');
 }
 
-async function refresh() { if (!load()) return; try { render(await readStatus()); } catch (e) { setPill('relay', 'bad', e.message); } }
+async function refresh() {
+  if (!load()) { renderUnset(); return; }
+  try { render(await readStatus()); }
+  catch (e) { setPill('relay', 'bad', e.message); setPill('pc', '', 'unknown'); }
+}
 
-async function hmacHex(secret, msg) {
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(msg));
-  return [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, '0')).join('');
+function randomNonce() {
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  let out = '';
+  for (let i = 0; i < bytes.length; i++) out += bytes[i].toString(16).padStart(2, '0');
+  return out;
 }
 
 async function wake() {
-  const c = load(); if (!c) { $('setup').open = true; return; }
+  const c = load();
+  if (!c) { $('setup').open = true; $('result').textContent = 'Set up this device first.'; return; }
+  if (!window.crypto || !crypto.subtle) {
+    $('result').textContent = 'Open this page over HTTPS. Signing needs a secure page.';
+    return;
+  }
   $('wake').disabled = true; $('result').textContent = 'Sending signed command...';
   try {
-    const nonce = [...crypto.getRandomValues(new Uint8Array(8))].map(b => b.toString(16).padStart(2, '0')).join('');
+    const nonce = randomNonce();
     const ts = Date.now();
-    const sig = await hmacHex(c.secret, `wake|${ts}|${nonce}`);
-    await api('PATCH', { files: { 'command.json': { content: JSON.stringify({ cmd: { action: 'wake', ts, nonce, sig } }) } } });
+    const command = await buildWakeCommand(c.secret, ts, nonce);
+    await api('PATCH', { files: { 'command.json': { content: JSON.stringify(command) } } });
+    statusEtag = null;
     $('result').textContent = 'Sent. Waiting for the relay...';
     const t0 = Date.now();
     while (Date.now() - t0 < 120e3) {
@@ -79,12 +149,23 @@ async function wake() {
 }
 
 $('wake').onclick = wake;
-$('save').onclick = () => { store({ token: $('token').value.trim(), secret: $('secret').value.trim(), gist_id: $('gist').value.trim() }); $('setup').open = false; refresh(); };
-$('forget').onclick = () => { localStorage.removeItem(LS); fillForm(); $('qr').innerHTML = ''; };
+$('save').onclick = () => {
+  const c = readForm();
+  if (!c) { $('result').textContent = 'Token, secret, and gist ID are all required.'; return; }
+  store(c);
+  $('setup').open = false;
+  $('result').textContent = '';
+  refresh();
+};
+$('forget').onclick = () => { localStorage.removeItem(LS); fillForm(); $('qr').innerHTML = ''; statusEtag = null; statusCache = null; refresh(); };
 $('showqr').onclick = () => {
-  const c = load(); if (!c) return;
-  const link = `${location.origin}${location.pathname}#setup=${b64u.enc(JSON.stringify(c))}`;
+  const c = readForm();
+  if (!c) { $('result').textContent = 'Add the token, secret, and gist ID first.'; return; }
+  store(c);
+  const link = `${location.origin}${location.pathname}${location.search}#setup=${b64urlEncode(JSON.stringify(c))}`;
   const qr = qrcode(0, 'L'); qr.addData(link); qr.make();
   $('qr').innerHTML = qr.createImgTag(5, 8);
 };
-fillForm(); refresh(); setInterval(refresh, 15000);
+fillForm();
+refresh();
+setInterval(refresh, 15000);

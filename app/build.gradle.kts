@@ -11,9 +11,10 @@ android {
         applicationId = "com.marcosvec.pcwake"
         minSdk = 28          // Fire OS 7+
         targetSdk = 30
-        versionCode = 5
-        versionName = "0.4.1"
+        versionCode = 6
+        versionName = "0.5.0"
     }
+    buildFeatures { buildConfig = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -21,6 +22,10 @@ android {
     kotlinOptions { jvmTarget = "17" }
 }
 
+configurations.configureEach {
+    exclude(group = "org.json", module = "json")
+}
+
 dependencies {
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation(project(":core"))
 }

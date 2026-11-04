@@ -38,7 +38,7 @@ Do this first. If it fails, nothing after it matters.
    ```
    New-NetFirewallRule -DisplayName "PC Wake - allow ping from home network" -Direction Inbound -Protocol ICMPv4 -IcmpType 8 -Profile Private -RemoteAddress LocalSubnet -Action Allow
    ```
-6. **Test it:** install any Wake-on-LAN app on your phone and add your PC MAC and broadcast. Sleep the PC, wait **30 seconds**, then send a wake. If the PC wakes, keep going.
+6. **Test it:** install any Wake-on-LAN app on your phone and add your PC MAC and broadcast. Sleep the PC, wait **30 seconds**, then send a wake. If the PC wakes, keep going. If the phone is on the same Wi-Fi and nothing happens, the access point may be blocking traffic between devices. Fix that on the router first. The relay sends the same kind of packet, so it can't do better than this test.
 
 Optional, in admin PowerShell: stop Windows from putting the PC back to sleep 2 minutes after a remote wake.
 ```
@@ -65,7 +65,7 @@ This lets the page and the Stick read and write that gist.
 2. Name: anything, like `pc-wake`. Expiration: 90 days. You'll redo this step when it expires.
 3. Repository access: **Public repositories**.
 4. Permissions → Account → **Gists: Read and write**. Nothing else.
-5. Generate it and copy the **token** (starts with `github_pat_`). Treat it like a password.
+5. Generate it and copy the **token** (starts with `github_pat_`). Treat it like a password. If the Gists permission isn't in the list, create a classic token instead and give it only the `gist` scope.
 
 ## 4. Make a signing secret
 
@@ -82,15 +82,16 @@ Every wake command gets signed with this, so only someone with the secret can wa
 1. On the Fire Stick: **Settings → My Fire TV → About**, click the device name **7 times**. Then **Developer Options → ADB debugging: On**. Note the Stick's IP under **About → Network**.
 2. On your computer, install [Android platform-tools](https://developer.android.com/tools/releases/platform-tools) for ADB.
 3. Run `adb connect STICK_IP:5555`. Accept the prompt on the TV, and tick "Always allow".
-4. Build the app from this repo. It needs JDK 17 and the Android SDK:
+4. Build the app from this repo. It needs JDK 17 and the Android SDK. On Mac or Linux:
    ```
-   gradlew assembleDebug
+   ./gradlew assembleDebug
    adb install -r app/build/outputs/apk/debug/app-debug.apk
    ```
+   On Windows, run `gradlew.bat assembleDebug` instead of `./gradlew`.
 
 ## 6. Give the relay its config
 
-Make a file called `config.json` with your values from the table:
+Copy [config.example.json](config.example.json) to `config.json` and fill in your values from the table (or paste the template below). `.env.example` lists the same placeholders. The app does not read `.env`. `config.json` is gitignored; delete it after you push it.
 ```json
 {
   "token": "github_pat_...",
@@ -123,8 +124,8 @@ The TV screen shows the relay's live status: whether it's running, when it last 
 
 ## 8. Set up the control page
 
-1. Fork this repo. Go to **Settings → Pages**, set Source to "Deploy from a branch", branch `main`, folder `/docs`. Your page goes live at `https://your-name.github.io/pc-wake/`.
-2. Open it, expand **Setup on this device**, paste your token, secret and gist ID, and hit **Save**. "Relay" should turn green within a minute.
+1. Fork this repo. Go to **Settings → Pages**, set Source to "Deploy from a branch", branch `main`, folder `/docs`. Your page goes live at `https://your-name.github.io/pc-wake/`. Open that HTTPS URL. A copy opened from disk can't sign commands.
+2. Expand **Setup on this device**, paste your token, secret and gist ID, and hit **Save**. "Relay" should turn green within a minute.
 3. For your phone, hit **Phone setup QR** and scan it with your phone's camera. Don't screenshot or share the QR. It contains your token.
 
 **Test:** sleep the PC, wait 30 seconds, tap **Wake PC**.

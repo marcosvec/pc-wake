@@ -1,0 +1,8 @@
+{
+  "token": "github_pat_replace_me",
+  "secret": "replace-with-a-long-random-string",
+  "gist_id": "0123456789abcdef0123456789abcdef",
+  "pc_mac": "AA:BB:CC:DD:EE:FF",
+  "pc_ip": "192.168.1.50",
+  "broadcast": "192.168.1.255"
+}
