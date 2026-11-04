@@ -1,7 +1,12 @@
 .gradle/
 build/
 app/build/
+core/build/
 local.properties
-*.apk.idea/
+*.apk
+.idea/
 .kotlin/
 *.iml
+.env
+config.json
+*.log

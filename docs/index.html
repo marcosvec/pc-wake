@@ -47,10 +47,11 @@
       <label for="gist">Gist ID</label><input id="gist" autocomplete="off">
       <div class="btns"><button id="save">Save</button><button id="showqr">Phone setup QR</button><button id="forget">Forget</button></div>
       <div id="qr"></div>
-      <p class="note">Saved only in this browser. The QR contains your token: scan it with your phone, don't screenshot or share it.</p>
+      <p class="note">Saved only in this browser. Open the page over HTTPS; a file from disk can't sign commands. The QR contains your token: scan it with your phone, don't screenshot or share it.</p>
     </details>
   </div>
 </main>
+<script src="protocol.js"></script>
 <script src="qrcode.js"></script>
 <script src="app.js"></script>
 </body>
